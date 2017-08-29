@@ -1518,6 +1518,9 @@ public class CFGBuilder {
                 TreeBuilder treeBuilder,
                 AnnotationProvider annotationProvider) {
             this.env = env;
+            if (trees == null) {
+                trees = Trees.instance(env);
+            }
             this.tryStack = new TryStack(exceptionalExitLabel);
             this.treeBuilder = treeBuilder;
             this.annotationProvider = annotationProvider;
@@ -1549,7 +1552,6 @@ public class CFGBuilder {
             // just generate a degenerated control graph case that will be
             // removed in a later phase.
             nodeList.add(new UnconditionalJump(regularExitLabel));
-
             return new PhaseOneResult(
                     underlyingAST,
                     treeLookupMap,
