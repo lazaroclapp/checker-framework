@@ -100,7 +100,7 @@ public class Java8Lambdas {
         runner.doUISafely(e -> e.dangerous());
         PolymorphicLambdaRunner safePolymorphicLambdaRunner = new PolymorphicLambdaRunner(elem);
         safePolymorphicLambdaRunner.doEither(e -> e.repaint());
-        //:: error: (call.invalid.ui)
+        //:: error: (argument.type.incompatible)
         safePolymorphicLambdaRunner.doEither(e -> e.dangerous());
         @UI PolymorphicLambdaRunner uiPolymorphicLambdaRunner = new @UI PolymorphicLambdaRunner(elem);
         //:: error: (call.invalid.ui)
@@ -130,7 +130,7 @@ public class Java8Lambdas {
         runner.doUI(e -> e.repaint());
         runner.doUI(e -> e.dangerous());
         PolymorphicLambdaRunner safePolymorphicLambdaRunner = new PolymorphicLambdaRunner(elem);
-        //:: error: (call.invalid.ui)
+        //:: error: (argument.type.incompatible)
         safePolymorphicLambdaRunner.doEither(e -> e.dangerous());
         @UI PolymorphicLambdaRunner uiPolymorphicLambdaRunner = new @UI PolymorphicLambdaRunner(elem);
         uiPolymorphicLambdaRunner.doEither(e -> e.dangerous());

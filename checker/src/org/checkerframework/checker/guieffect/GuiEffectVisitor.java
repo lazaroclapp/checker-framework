@@ -122,7 +122,7 @@ public class GuiEffectVisitor extends BaseTypeVisitor<GuiEffectTypeFactory> {
     // For assignments and local variable initialization:
     // Check for @UI annotations on the lhs, use them to infer @UI types on lambda expressions in the rhs
     private void inferLambdaTypeOnAssignment(Tree lhs, ExpressionTree rhs) {
-        if (rhs instanceof LambdaExpressionTree) {
+        if (rhs.getKind() == Tree.Kind.LAMBDA_EXPRESSION) {
             LambdaExpressionTree lambdaTree = (LambdaExpressionTree) rhs;
             AnnotatedTypeMirror lhsType = atypeFactory.getAnnotatedType(lhs);
             if (lhsType.hasAnnotation(UI.class)) {
@@ -142,22 +142,34 @@ public class GuiEffectVisitor extends BaseTypeVisitor<GuiEffectTypeFactory> {
 
     @Override
     public Void visitVariable(VariableTree node, Void p) {
-        if (node.getInitializer() != null) {
-            inferLambdaTypeOnAssignment(node, node.getInitializer());
+        Void result = super.visitVariable(node, p);
+        if (node.getInitializer() != null && node.getInitializer().getKind() == Tree.Kind.LAMBDA_EXPRESSION) {
+            // Re-do assignment check after lambda inference
+            commonAssignmentCheck(
+                    atypeFactory.getAnnotatedType(node),
+                    node.getInitializer(),
+                    "argument.type.incompatible");
         }
-        return super.visitVariable(node, p);
+        return result;
     }
 
     @Override
     public Void visitAssignment(AssignmentTree node, Void p) {
-        inferLambdaTypeOnAssignment(node.getVariable(), node.getExpression());
-        return super.visitAssignment(node, p);
+        Void result = super.visitAssignment(node, p);
+        if (node.getExpression().getKind() == Tree.Kind.LAMBDA_EXPRESSION) {
+            // Re-do assignment check after lambda inference
+            commonAssignmentCheck(
+                    atypeFactory.getAnnotatedType(node.getVariable()),
+                    node.getExpression(),
+                    "argument.type.incompatible");
+        }
+        return result;
     }
 
     // Returning a lambda expression also triggers inference based on the method's return type.
     @Override
     public Void visitReturn(ReturnTree node, Void p) {
-        if (node.getExpression() instanceof LambdaExpressionTree) {
+        if (node.getKind() == Tree.Kind.LAMBDA_EXPRESSION) {
             LambdaExpressionTree lambdaTree = (LambdaExpressionTree) node.getExpression();
             ExecutableElement retFIMethodElt = TreeUtils.getFunctionalInterfaceMethod(lambdaTree);
             Effect lambdaEffect = atypeFactory.getDeclaredEffect(retFIMethodElt);
@@ -209,75 +221,9 @@ public class GuiEffectVisitor extends BaseTypeVisitor<GuiEffectTypeFactory> {
             System.err.println("callerTree found: " + callerTree.getKind());
         }
 
-        Effect targetEffect = atypeFactory.getDeclaredEffect(methodElt);
-        // System.err.println("Dispatching method "+node+"on "+node.getMethodSelect());
-        boolean polyUIArgumentsAreUI = true;
-        if (targetEffect.isPoly()) {
-            AnnotatedTypeMirror srcType = null;
-            assert (node.getMethodSelect().getKind() == Tree.Kind.IDENTIFIER
-                    || node.getMethodSelect().getKind() == Tree.Kind.MEMBER_SELECT);
-            if (node.getMethodSelect().getKind() == Tree.Kind.MEMBER_SELECT) {
-                ExpressionTree src = ((MemberSelectTree) node.getMethodSelect()).getExpression();
-                srcType = atypeFactory.getAnnotatedType(src);
-            } else {
-                // Tree.Kind.IDENTIFIER, e.g. a direct call like "super()"
-                srcType = visitorState.getMethodReceiver();
-            }
-
-            // Instantiate type-polymorphic effects
-            if (srcType.hasAnnotation(AlwaysSafe.class)) {
-                targetEffect = new Effect(SafeEffect.class);
-                polyUIArgumentsAreUI = false;
-            } else if (srcType.hasAnnotation(UI.class)) {
-                targetEffect = new Effect(UIEffect.class);
-            }
-            // Poly substitution would be a noop.
-        }
-
-        // Look for lambda arguments and infer them to be @UIEffect for this call
-        List<? extends ExpressionTree> args = node.getArguments();
-        List<? extends VariableElement> parameters = methodElt.getParameters();
-        Pair<AnnotatedExecutableType, List<AnnotatedTypeMirror>> mfuPair =
-                atypeFactory.methodFromUse(node);
-        AnnotatedExecutableType invokedMethod = mfuPair.first;
-        List<AnnotatedTypeMirror> typeargs =
-                AnnotatedTypes.expandVarArgs(atypeFactory, invokedMethod, node.getArguments());
-        for (int i = 0; i < args.size(); ++i) {
-            if (args.get(i) instanceof LambdaExpressionTree) {
-                //System.err.println(methodElt + " is from stub file? " + atypeFactory.isFromStubFile(methodElt));
-                LambdaExpressionTree lambdaTree = (LambdaExpressionTree) args.get(i);
-                VariableElement formalArgElement = parameters.get(i);
-                // For some reason, these two have different information, and neither is a subset of the other.
-                // argTypeFromMFU is needed for stubs, argTypeFromArgElement will actually find @PolyUI when in the
-                // source. Neither will find @PolyUI in stubs.
-                // ToDo: Figure out a better way to works in both cases
-                AnnotatedTypeMirror argTypeFromArgElement =
-                        atypeFactory.getAnnotatedType(formalArgElement);
-                AnnotatedTypeMirror argTypeFromMFU = typeargs.get(i);
-                ExecutableElement argFIMethodElt =
-                        TreeUtils.getFunctionalInterfaceMethod(lambdaTree);
-                Effect lambdaEffect = atypeFactory.getDeclaredEffect(argFIMethodElt);
-                // How are these not a at least one a super set of the other?
-                /*System.err.println(methodElt
-                + " UI_from_mfu=" + argTypeFromMFU.hasAnnotation(UI.class)
-                + " PolyUI_from_mfu=" + argTypeFromMFU.hasAnnotation(PolyUI.class)
-                + " UI_from_argElem=" + argTypeFromArgElement.hasAnnotation(UI.class)
-                + " PolyUI_from_argElem=" + argTypeFromArgElement.hasAnnotation(PolyUI.class));*/
-                boolean argIsUI =
-                        argTypeFromMFU.hasAnnotation(UI.class)
-                                || argTypeFromArgElement.hasAnnotation(UI.class);
-                boolean argIsPolyUI =
-                        argTypeFromMFU.hasAnnotation(PolyUI.class)
-                                || argTypeFromArgElement.hasAnnotation(PolyUI.class);
-                if (lambdaEffect.isPoly() && (argIsUI || (argIsPolyUI && polyUIArgumentsAreUI))) {
-                    if (debugSpew) {
-                        System.err.println(
-                                "Lambda inferred to be @UIEffect: " + lambdaTree.getBody());
-                    }
-                    atypeFactory.constrainLambdaToUI(lambdaTree);
-                }
-            }
-        }
+        Effect targetEffect =
+                atypeFactory.getComputedEffectAtCallsite(
+                        node, visitorState.getMethodReceiver(), methodElt);
 
         Effect callerEffect = null;
         if (callerTree.getKind() == Tree.Kind.METHOD) {
@@ -294,6 +240,22 @@ public class GuiEffectVisitor extends BaseTypeVisitor<GuiEffectTypeFactory> {
             callerEffect =
                     atypeFactory.getInferedEffectForLambdaExpression(
                             (LambdaExpressionTree) callerTree);
+            System.err.println("lambda: " + callerTree + " with effect " + callerEffect);
+            // Perform lambda polymorphic effect inference: @PolyUI lambda, calling @UIEffect => @UI lambda
+            if (targetEffect.isUI() && callerEffect.isPoly()) {
+                System.err.println(
+                        "Poly lambda: "
+                                + callerTree
+                                + " calling @UIEffect method: "
+                                + node
+                                + " infer @UI.");
+                atypeFactory.constrainLambdaToUI((LambdaExpressionTree) callerTree);
+                callerEffect =
+                        atypeFactory.getInferedEffectForLambdaExpression(
+                                (LambdaExpressionTree) callerTree);
+                //System.err.println("lambda is NOW: " + callerTree + " with effect " + callerEffect);
+                assert callerEffect.isUI();
+            }
         }
         assert callerEffect != null;
 
@@ -308,7 +270,59 @@ public class GuiEffectVisitor extends BaseTypeVisitor<GuiEffectTypeFactory> {
                     "Successfully finished main non-recursive checkinv of invocation " + node);
         }
 
-        return super.visitMethodInvocation(node, p);
+        Void result = super.visitMethodInvocation(node, p);
+
+        // Check arguments to this method invocation for UI-lambdas, this must be re-checked after visiting the lambda
+        // body due to inference.
+        List<? extends ExpressionTree> args = node.getArguments();
+        Pair<AnnotatedExecutableType, List<AnnotatedTypeMirror>> mfuPair =
+                atypeFactory.methodFromUse(node);
+        AnnotatedExecutableType invokedMethod = mfuPair.first;
+        List<? extends VariableElement> parameters = methodElt.getParameters();
+        List<AnnotatedTypeMirror> typeargs =
+                AnnotatedTypes.expandVarArgs(atypeFactory, invokedMethod, node.getArguments());
+        for (int i = 0; i < args.size(); ++i) {
+            if (args.get(i) instanceof LambdaExpressionTree) {
+                /*LambdaExpressionTree lambdaTree = (LambdaExpressionTree) args.get(i);
+                Effect lambdaEffect = atypeFactory.getInferedEffectForLambdaExpression(lambdaTree);
+                AnnotatedTypeMirror lambdaType =
+                        atypeFactory.getInferedTypeForLambdaExpression(lambdaTree);
+                System.err.println(
+                        "Call: "
+                                + node
+                                + " with lambda with effect "
+                                + lambdaEffect
+                                + " and arg: "
+                                + typeargs.get(i).toString(true));*/
+                commonAssignmentCheck(
+                        typeargs.get(i), args.get(i), "argument.type.incompatible");
+                /*if (lambdaType.hasAnnotation(UI.class)) {
+                    AnnotatedTypeMirror argTypeFromArgElement =
+                            atypeFactory.getAnnotatedType(parameters.get(i));
+                    AnnotatedTypeMirror argTypeFromMFU = typeargs.get(i);
+                    boolean argIsUI =
+                            argTypeFromMFU.hasAnnotation(UI.class)
+                                    || argTypeFromArgElement.hasAnnotation(UI.class);
+                    boolean argIsPolyUI =
+                            argTypeFromMFU.hasAnnotation(PolyUI.class)
+                                    || argTypeFromArgElement.hasAnnotation(PolyUI.class);
+                    if (argIsUI) {
+                        continue;
+                    } else if (argIsPolyUI) {
+                        System.err.println("HERE: " + node);
+                    }
+                    // Check for @PolyUI methods instantiated @UI
+                    String valueTypeString = valueTypeString = lambdaType.toString(true);
+                    String varTypeString = typeargs.get(i).toString(true);
+                    checker.report(
+                            Result.failure(
+                                    "argument.type.incompatible", valueTypeString, varTypeString),
+                            node);
+                }*/
+            }
+        }
+
+        return result;
     }
 
     @Override
