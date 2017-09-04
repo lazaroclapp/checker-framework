@@ -6,8 +6,10 @@ import com.sun.source.tree.MemberSelectTree;
 import com.sun.source.tree.MethodInvocationTree;
 import com.sun.source.tree.MethodTree;
 import com.sun.source.tree.Tree;
+import com.sun.source.util.TreePath;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.Stack;
 import javax.lang.model.element.AnnotationMirror;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
@@ -29,6 +31,7 @@ import org.checkerframework.checker.guieffect.qual.UIType;
 import org.checkerframework.common.basetype.BaseAnnotatedTypeFactory;
 import org.checkerframework.common.basetype.BaseTypeChecker;
 import org.checkerframework.framework.source.Result;
+import org.checkerframework.framework.source.SourceVisitor;
 import org.checkerframework.framework.type.AnnotatedTypeMirror;
 import org.checkerframework.framework.type.treeannotator.ListTreeAnnotator;
 import org.checkerframework.framework.type.treeannotator.TreeAnnotator;
@@ -43,6 +46,8 @@ public class GuiEffectTypeFactory extends BaseAnnotatedTypeFactory {
     protected final boolean debugSpew;
 
     protected final Set<LambdaExpressionTree> uiLambdas = new HashSet<LambdaExpressionTree>();
+    protected final GuiEffectRecursiveLambdaAnnotator lambdaAnnotator =
+            new GuiEffectRecursiveLambdaAnnotator();
 
     public GuiEffectTypeFactory(BaseTypeChecker checker, boolean spew) {
         // use true to enable flow inference, false to disable it
@@ -515,6 +520,58 @@ public class GuiEffectTypeFactory extends BaseAnnotatedTypeFactory {
         //AnnotatedTypeMirror typeMirror = getAnnotatedType(lambdaExpressionTree);
         //typeMirror.addAnnotation(UI.class);
         uiLambdas.add(lambdaExpressionTree);
+    }
+
+    public void recursivelyAnnotateLambdas(TreePath path) {
+        lambdaAnnotator.setRoot(path.getCompilationUnit());
+        lambdaAnnotator.visit(path);
+    }
+
+    private class GuiEffectRecursiveLambdaAnnotator extends SourceVisitor<Void, Void> {
+
+        private final Stack<LambdaExpressionTree> currentLambdas =
+                new Stack<LambdaExpressionTree>();
+
+        GuiEffectRecursiveLambdaAnnotator() {
+            super(GuiEffectTypeFactory.this.checker);
+        }
+
+        @Override
+        public Void visitMethodInvocation(MethodInvocationTree node, Void p) {
+            //System.err.println("GuiEffectRecursiveLambdaAnnotator.visitMethodInvocation on " + node);
+            if (!currentLambdas.empty()) {
+                LambdaExpressionTree lambdaTree = currentLambdas.peek();
+                if (lambdaTree != null) {
+                    ExecutableElement methodElt = TreeUtils.elementFromUse(node);
+                    Effect targetEffect = getComputedEffectAtCallsite(node, null, methodElt);
+                    Effect lambdaEffect = getInferedEffectForLambdaExpression(lambdaTree);
+                    // Perform lambda polymorphic effect inference: @PolyUI lambda, calling @UIEffect => @UI lambda
+                    if (targetEffect.isUI() && lambdaEffect.isPoly()) {
+                        constrainLambdaToUI(lambdaTree);
+                        assert getInferedEffectForLambdaExpression(lambdaTree).isUI();
+                    }
+                }
+            }
+            return super.visitMethodInvocation(node, p);
+        }
+
+        @Override
+        public Void visitMethod(MethodTree node, Void p) {
+            // Mask current lambda until done scanning this method.
+            currentLambdas.push(null);
+            Void result = super.visitMethod(node, p);
+            currentLambdas.pop();
+            return result;
+        }
+
+        @Override
+        public Void visitLambdaExpression(LambdaExpressionTree node, Void p) {
+            //System.err.println("GuiEffectRecursiveLambdaAnnotator.visitLambdaExpression on " + node);
+            currentLambdas.push(node);
+            Void result = super.visitLambdaExpression(node, p);
+            currentLambdas.pop();
+            return result;
+        }
     }
 
     /** A class for adding annotations based on tree. */

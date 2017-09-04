@@ -2,7 +2,6 @@ package org.checkerframework.checker.guieffect;
 
 import com.sun.source.tree.AssignmentTree;
 import com.sun.source.tree.ClassTree;
-import com.sun.source.tree.ExpressionTree;
 import com.sun.source.tree.LambdaExpressionTree;
 import com.sun.source.tree.MemberSelectTree;
 import com.sun.source.tree.MethodInvocationTree;
@@ -11,13 +10,11 @@ import com.sun.source.tree.ReturnTree;
 import com.sun.source.tree.Tree;
 import com.sun.source.tree.VariableTree;
 import java.util.Collections;
-import java.util.List;
 import java.util.Set;
 import java.util.Stack;
 import javax.lang.model.element.AnnotationMirror;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.TypeElement;
-import javax.lang.model.element.VariableElement;
 import org.checkerframework.checker.guieffect.qual.AlwaysSafe;
 import org.checkerframework.checker.guieffect.qual.PolyUI;
 import org.checkerframework.checker.guieffect.qual.PolyUIEffect;
@@ -30,9 +27,7 @@ import org.checkerframework.framework.qual.PolyAll;
 import org.checkerframework.framework.source.Result;
 import org.checkerframework.framework.type.AnnotatedTypeMirror;
 import org.checkerframework.framework.type.AnnotatedTypeMirror.AnnotatedExecutableType;
-import org.checkerframework.framework.util.AnnotatedTypes;
 import org.checkerframework.javacutil.AnnotationUtils;
-import org.checkerframework.javacutil.Pair;
 import org.checkerframework.javacutil.TreeUtils;
 
 /** Require that only UI code invokes code with the UI effect. */
@@ -131,25 +126,25 @@ public class GuiEffectVisitor extends BaseTypeVisitor<GuiEffectTypeFactory> {
     @Override
     public Void visitVariable(VariableTree node, Void p) {
         Void result = super.visitVariable(node, p);
-        if (node.getInitializer() != null
+        /*if (node.getInitializer() != null
                 && node.getInitializer().getKind() == Tree.Kind.LAMBDA_EXPRESSION) {
             lambdaAssignmentCheck(
                     atypeFactory.getAnnotatedType(node),
                     (LambdaExpressionTree) node.getInitializer(),
                     "assignment.type.incompatible");
-        }
+        }*/
         return result;
     }
 
     @Override
     public Void visitAssignment(AssignmentTree node, Void p) {
         Void result = super.visitAssignment(node, p);
-        if (node.getExpression().getKind() == Tree.Kind.LAMBDA_EXPRESSION) {
+        /*if (node.getExpression().getKind() == Tree.Kind.LAMBDA_EXPRESSION) {
             lambdaAssignmentCheck(
                     atypeFactory.getAnnotatedType(node.getVariable()),
                     (LambdaExpressionTree) node.getExpression(),
                     "assignment.type.incompatible");
-        }
+        }*/
         return result;
     }
 
@@ -158,8 +153,9 @@ public class GuiEffectVisitor extends BaseTypeVisitor<GuiEffectTypeFactory> {
     public Void visitReturn(ReturnTree node, Void p) {
         Void result = super.visitReturn(node, p);
         /*if (node.getExpression() != null && TreeUtils.enclosingClass(getCurrentPath()).toString().contains("Java8"))
-        System.err.println(TreeUtils.enclosingMethodOrLambda(getCurrentPath()) + " returns: " + node.getExpression() + " with type " +
-            atypeFactory.getAnnotatedType(node.getExpression()));*/
+            System.err.println(TreeUtils.enclosingMethodOrLambda(getCurrentPath()) + " returns: " + node.getExpression()
+                + " with type " +
+            atypeFactory.getAnnotatedType(node.getExpression()));
         if (node.getExpression() != null
                 && node.getExpression().getKind() == Tree.Kind.LAMBDA_EXPRESSION) {
 
@@ -193,7 +189,7 @@ public class GuiEffectVisitor extends BaseTypeVisitor<GuiEffectTypeFactory> {
             } finally {
                 visitorState.setAssignmentContext(preAssCtxt);
             }
-        }
+        }*/
         return result;
     }
 
@@ -241,14 +237,6 @@ public class GuiEffectVisitor extends BaseTypeVisitor<GuiEffectTypeFactory> {
             callerEffect =
                     atypeFactory.getInferedEffectForLambdaExpression(
                             (LambdaExpressionTree) callerTree);
-            // Perform lambda polymorphic effect inference: @PolyUI lambda, calling @UIEffect => @UI lambda
-            if (targetEffect.isUI() && callerEffect.isPoly()) {
-                atypeFactory.constrainLambdaToUI((LambdaExpressionTree) callerTree);
-                callerEffect =
-                        atypeFactory.getInferedEffectForLambdaExpression(
-                                (LambdaExpressionTree) callerTree);
-                assert callerEffect.isUI();
-            }
         }
         assert callerEffect != null;
 
@@ -263,29 +251,7 @@ public class GuiEffectVisitor extends BaseTypeVisitor<GuiEffectTypeFactory> {
                     "Successfully finished main non-recursive checkinv of invocation " + node);
         }
 
-        Void result = super.visitMethodInvocation(node, p);
-
-        // Check arguments to this method invocation for UI-lambdas, this must be re-checked after visiting the lambda
-        // body due to inference.
-        List<? extends ExpressionTree> args = node.getArguments();
-        Pair<AnnotatedExecutableType, List<AnnotatedTypeMirror>> mfuPair =
-                atypeFactory.methodFromUse(node);
-        AnnotatedExecutableType invokedMethod = mfuPair.first;
-        List<? extends VariableElement> parameters = methodElt.getParameters();
-        List<AnnotatedTypeMirror> typeargs =
-                AnnotatedTypes.expandVarArgs(atypeFactory, invokedMethod, node.getArguments());
-        for (int i = 0; i < args.size(); ++i) {
-            if (args.get(i) instanceof LambdaExpressionTree) {
-                // !! This doesn't work, because BaseTypeVisitor.shouldSkipUses(...) always returns true from lambdas
-                //commonAssignmentCheck(typeargs.get(i), args.get(i), "argument.type.incompatible");
-                lambdaAssignmentCheck(
-                        typeargs.get(i),
-                        (LambdaExpressionTree) args.get(i),
-                        "argument.type.incompatible");
-            }
-        }
-
-        return result;
+        return super.visitMethodInvocation(node, p);
     }
 
     @Override
@@ -368,6 +334,14 @@ public class GuiEffectVisitor extends BaseTypeVisitor<GuiEffectTypeFactory> {
 
     @Override
     public void processClassTree(ClassTree node) {
+        // Extra full scan pass, doing lambda @PolyUI => @UI / @AlwaysSafe inference.
+        // Only on top-level classes (visitCompilationUnit doesn't seem to work for this)
+        //System.err.println(TreeUtils.enclosingClass(getCurrentPath().getParentPath()));
+        if (TreeUtils.enclosingClass(getCurrentPath().getParentPath()) == null) {
+            //System.err.println("Run inference!");
+            atypeFactory.recursivelyAnnotateLambdas(getCurrentPath());
+        }
+
         // TODO: Check constraints on this class decl vs. parent class decl., and interfaces
         // TODO: This has to wait for now: maybe this will be easier with the isValidUse on the TypeFactory
         // AnnotatedTypeMirror.AnnotatedDeclaredType atype = atypeFactory.fromClass(node);
